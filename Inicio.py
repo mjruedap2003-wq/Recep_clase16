@@ -2,6 +2,7 @@ import streamlit as st
 import paho.mqtt.client as mqtt
 import json
 import time
+import random
 import pandas as pd
 from datetime import datetime
 
@@ -138,35 +139,41 @@ if 'sensor_history' not in st.session_state:
     st.session_state.sensor_history = []
 
 def get_mqtt_message(broker, port, topic, client_id):
-    """Función para obtener un mensaje MQTT de forma sincrónica"""
+    """Función para obtener un mensaje MQTT con timeout extendido e ID único"""
     message_received = {"received": False, "payload": None}
+    
+    # Agregar un sufijo aleatorio para evitar colisiones de clientes en el Broker
+    unique_client_id = f"{client_id}_{random.randint(1000, 9999)}"
     
     def on_message(client, userdata, message):
         try:
             payload = json.loads(message.payload.decode())
             message_received["payload"] = payload
             message_received["received"] = True
-        except:
-            # Si no es JSON, guardar como texto plano
+        except Exception:
+            # Si no es un JSON válido, guardar como texto simple
             message_received["payload"] = message.payload.decode()
             message_received["received"] = True
     
     try:
-        client = mqtt.Client(client_id=client_id)
+        client = mqtt.Client(client_id=unique_client_id)
         client.on_message = on_message
         client.connect(broker, port, 60)
         client.subscribe(topic)
         client.loop_start()
         
-        # Esperar máximo 4 segundos a que llegue el dato
-        timeout = time.time() + 4
+        # Esperar hasta 10 segundos para dar tiempo a que Wokwi publique
+        timeout = time.time() + 10
         while not message_received["received"] and time.time() < timeout:
             time.sleep(0.1)
         
         client.loop_stop()
         client.disconnect()
         
-        return message_received["payload"] if message_received["received"] else {"error": "Tiempo de espera agotado sin recibir datos"}
+        if message_received["received"]:
+            return message_received["payload"]
+        else:
+            return {"error": f"No se recibió ningún dato en el tópico '{topic}'. Asegúrate de presionar PLAY en Wokwi y verificar que el tópico coincida."}
     
     except Exception as e:
         return {"error": str(e)}
@@ -214,7 +221,7 @@ st.markdown("""
 
 # --- BOTÓN DE CAPTURA DE DATOS ---
 if st.button('🔄 CAPTURAR DATOS DEL SENSOR', type="primary"):
-    with st.spinner('🌌 Conectando al Broker y leyendo variables de la matriz...'):
+    with st.spinner('🌌 Escaneando el Broker MQTT y esperando paquete del ESP32...'):
         data = get_mqtt_message(broker, int(port), topic, client_id)
         
         # Procesar si no hay error
