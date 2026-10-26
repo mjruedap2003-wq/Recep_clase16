@@ -2,20 +2,125 @@ import streamlit as st
 import paho.mqtt.client as mqtt
 import json
 import time
+import pandas as pd
+from datetime import datetime
 
-# Configuración de la página
+# 1. Configuración de la página
 st.set_page_config(
-    page_title="Lector de Sensor MQTT",
+    page_title="CyberSensor MQTT | Telemetría 📡",
     page_icon="📡",
-    layout="centered"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# Variables de estado
-if 'sensor_data' not in st.session_state:
-    st.session_state.sensor_data = None
+# 2. Estilos Cyberpunk / Neón (CSS)
+st.markdown("""
+    <style>
+    /* Fondo oscuro cibernético */
+    .stApp {
+        background-color: #0A0E17 !important;
+        color: #E2E8F0 !important;
+    }
+    #MainMenu, footer, header {visibility: hidden;}
+
+    /* Título principal con resplandor cian */
+    .neon-title {
+        font-size: 2.3rem;
+        font-weight: 900;
+        text-align: center;
+        color: #00F0FF;
+        text-shadow: 0 0 10px #00F0FF, 0 0 20px #00F0FF;
+        margin-bottom: 0.5rem;
+    }
+
+    /* Subtítulos en azul neón */
+    .cyan-sub-title {
+        color: #00F0FF !important;
+        font-size: 1.3rem !important;
+        font-weight: 800 !important;
+        text-shadow: 0 0 8px rgba(0, 240, 255, 0.6) !important;
+        margin-top: 0.8rem !important;
+        margin-bottom: 0.8rem !important;
+    }
+
+    /* FORZAR BARRA LATERAL OSCURA Y NEÓN */
+    section[data-testid="stSidebar"] {
+        background-color: #121722 !important;
+        border-right: 2px solid #00F0FF !important;
+    }
+
+    section[data-testid="stSidebar"] h1,
+    section[data-testid="stSidebar"] h2,
+    section[data-testid="stSidebar"] h3,
+    section[data-testid="stSidebar"] label,
+    section[data-testid="stSidebar"] .stMarkdown {
+        color: #00F0FF !important;
+        font-weight: bold !important;
+        text-shadow: 0 0 5px rgba(0, 240, 255, 0.5) !important;
+    }
+
+    /* Inputs de texto y números en la barra lateral */
+    div[data-testid="stTextInput"] input, div[data-testid="stNumberInput"] input {
+        background-color: #1A2232 !important;
+        color: #00F0FF !important;
+        border: 1px solid #00F0FF !important;
+        border-radius: 8px !important;
+    }
+
+    /* Tarjetas de Métricas */
+    div[data-testid="stMetric"] {
+        background-color: #1A2232 !important;
+        border: 1px solid #00F0FF !important;
+        border-radius: 8px !important;
+        padding: 10px !important;
+        box-shadow: 0 0 10px rgba(0, 240, 255, 0.2) !important;
+    }
+
+    div[data-testid="stMetricLabel"] {
+        color: #90CDF4 !important;
+    }
+
+    div[data-testid="stMetricValue"] {
+        color: #00FF66 !important;
+        font-weight: bold !important;
+    }
+
+    /* Botones Neón */
+    div.stButton > button {
+        width: 100%;
+        background: transparent !important;
+        color: #00FF66 !important;
+        border: 2px solid #00FF66 !important;
+        border-radius: 10px !important;
+        font-weight: bold !important;
+        font-size: 1.1rem !important;
+        box-shadow: 0 0 10px rgba(0, 255, 102, 0.2) !important;
+        transition: all 0.3s ease-in-out !important;
+    }
+
+    div.stButton > button:hover {
+        background-color: #00FF66 !important;
+        color: #0A0E17 !important;
+        box-shadow: 0 0 20px rgba(0, 255, 102, 0.8) !important;
+    }
+
+    /* Tarjeta contenedora de información */
+    .info-card {
+        background: #181E2A;
+        border: 1px solid #00F0FF;
+        border-radius: 10px;
+        padding: 1rem;
+        margin-bottom: 1.5rem;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# 3. Inicialización de variables de estado (Historial persistente)
+if 'sensor_history' not in st.session_state:
+    st.session_state.sensor_history = []
 
 def get_mqtt_message(broker, port, topic, client_id):
-    """Función para obtener un mensaje MQTT"""
+    """Función para obtener un mensaje MQTT de forma sincrónica"""
     message_received = {"received": False, "payload": None}
     
     def on_message(client, userdata, message):
@@ -24,7 +129,7 @@ def get_mqtt_message(broker, port, topic, client_id):
             message_received["payload"] = payload
             message_received["received"] = True
         except:
-            # Si no es JSON, guardar como texto
+            # Si no es JSON, guardar como texto plano
             message_received["payload"] = message.payload.decode()
             message_received["received"] = True
     
@@ -35,87 +140,102 @@ def get_mqtt_message(broker, port, topic, client_id):
         client.subscribe(topic)
         client.loop_start()
         
-        # Esperar máximo 5 segundos
-        timeout = time.time() + 5
+        # Esperar máximo 4 segundos a que llegue el dato
+        timeout = time.time() + 4
         while not message_received["received"] and time.time() < timeout:
             time.sleep(0.1)
         
         client.loop_stop()
         client.disconnect()
         
-        return message_received["payload"]
+        return message_received["payload"] if message_received["received"] else {"error": "Tiempo de espera agotado sin recibir datos"}
     
     except Exception as e:
         return {"error": str(e)}
 
-# Sidebar - Configuración
+# --- BARRA LATERAL: CONFIGURACIÓN MQTT ---
 with st.sidebar:
-    st.subheader('⚙️ Configuración de Conexión')
+    st.markdown('<div class="cyan-sub-title">⚙️ Conexión Broker MQTT</div>', unsafe_allow_html=True)
     
-    broker = st.text_input('Broker MQTT', value='broker.mqttdashboard.com', 
-                           help='Dirección del broker MQTT')
-    
-    port = st.number_input('Puerto', value=1883, min_value=1, max_value=65535,
-                           help='Puerto del broker (generalmente 1883)')
-    
-    topic = st.text_input('Tópico', value='Sensor/THP2',
-                          help='Tópico MQTT a suscribirse')
-    
-    client_id = st.text_input('ID del Cliente', value='streamlit_client',
-                              help='Identificador único para este cliente')
+    broker = st.text_input('Broker MQTT', value='broker.mqttdashboard.com')
+    port = st.number_input('Puerto', value=1883, min_value=1, max_value=65535)
+    topic = st.text_input('Tópico', value='Sensor/THP2')
+    client_id = st.text_input('ID del Cliente', value='streamlit_cyber_reader')
 
-# Título
-st.title('📡 Lector de Sensor MQTT')
-
-# Información al inicio
-with st.expander('ℹ️ Información', expanded=False):
-    st.markdown("""
-    ### Cómo usar esta aplicación:
+    st.markdown("---")
+    st.markdown('<div class="cyan-sub-title">📊 Control de Datos</div>', unsafe_allow_html=True)
+    st.metric("Total de Lecturas", len(st.session_state.sensor_history))
     
-    1. **Broker MQTT**: Ingresa la dirección del servidor MQTT en el sidebar
-    2. **Puerto**: Generalmente es 1883 para conexiones no seguras
-    3. **Tópico**: El canal al que deseas suscribirte
-    4. **ID del Cliente**: Un identificador único para esta conexión
-    5. Haz clic en **Obtener Datos** para recibir el mensaje más reciente
-    
-    ### Brokers públicos para pruebas:
-    - broker.mqttdashboard.com
-    - test.mosquitto.org
-    - broker.hivemq.com
-    """)
+    if st.button("🗑️ Limpiar Historial"):
+        st.session_state.sensor_history = []
+        st.rerun()
 
-st.divider()
+# --- ENCABEZADO PRINCIPAL ---
+st.markdown('<h1 class="neon-title">📡 CYBERSENSOR MQTT: TELEMETRÍA 🤖</h1>', unsafe_allow_html=True)
 
-# Botón para obtener datos
-if st.button('🔄 Obtener Datos del Sensor', use_container_width=True):
-    with st.spinner('Conectando al broker y esperando datos...'):
-        sensor_data = get_mqtt_message(broker, int(port), topic, client_id)
-        st.session_state.sensor_data = sensor_data
+st.markdown("""
+    <div class="info-card">
+        <p style="margin:0;">
+            🌐 Captura de datos en tiempo real mediante suscripción MQTT. Cada lectura guardada genera métricas al instante, un historial cronológico y <strong>gráficas dinámicas</strong> de las variables analógicas o numéricas enviadas.
+        </p>
+    </div>
+""", unsafe_allow_html=True)
 
-# Mostrar resultados
-if st.session_state.sensor_data:
-    st.divider()
-    st.subheader('📊 Datos Recibidos')
-    
-    data = st.session_state.sensor_data
-    
-    # Verificar si hay error
-    if isinstance(data, dict) and 'error' in data:
-        st.error(f"❌ Error de conexión: {data['error']}")
-    else:
-        st.success('✅ Datos recibidos correctamente')
+# --- BOTÓN DE CAPTURA DE DATOS ---
+if st.button('🔄 CAPTURAR DATOS DEL SENSOR', type="primary"):
+    with st.spinner('🌌 Conectando al Broker y leyendo variables de la matriz...'):
+        data = get_mqtt_message(broker, int(port), topic, client_id)
         
-        # Mostrar datos en formato JSON
-        if isinstance(data, dict):
-            # Mostrar cada campo en una métrica
-            cols = st.columns(len(data))
-            for i, (key, value) in enumerate(data.items()):
-                with cols[i]:
-                    st.metric(label=key, value=value)
-            
-            # Mostrar JSON completo
-            with st.expander('Ver JSON completo'):
-                st.json(data)
+        # Procesar si no hay error
+        if isinstance(data, dict) and 'error' in data:
+            st.error(f"❌ Error de conexión: {data['error']}")
         else:
-            # Si no es diccionario, mostrar como texto
-            st.code(data)
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            
+            # Formatear el registro
+            record = {"Hora": timestamp}
+            if isinstance(data, dict):
+                record.update(data)
+            else:
+                record["Valor"] = data
+            
+            # Guardar en el historial
+            st.session_state.sensor_history.append(record)
+            st.success('✅ Lectura capturada e integrada exitosamente')
+
+# --- DESPLIEGUE DE RESULTADOS Y GRÁFICAS ---
+if st.session_state.sensor_history:
+    st.markdown("---")
+    st.markdown('<div class="cyan-sub-title">📊 Última Lectura Recibida</div>', unsafe_allow_html=True)
+    
+    latest_record = st.session_state.sensor_history[-1]
+    
+    # Mostrar métricas del último registro
+    keys = [k for k in latest_record.keys() if k != "Hora"]
+    if keys:
+        cols = st.columns(len(keys))
+        for i, k in enumerate(keys):
+            with cols[i]:
+                st.metric(label=k, value=latest_record[k])
+
+    # Convertir historial a Pandas DataFrame
+    df_history = pd.DataFrame(st.session_state.sensor_history)
+
+    # --- SECCIÓN DE GRÁFICAS ---
+    st.markdown("---")
+    st.markdown('<div class="cyan-sub-title">📈 Gráfica de Tendencia de los Sensores</div>', unsafe_allow_html=True)
+    
+    # Filtrar solo columnas numéricas para graficar
+    numeric_cols = df_history.select_dtypes(include=['float64', 'int64', 'float', 'int']).columns.tolist()
+    
+    if numeric_cols:
+        # Gráfica lineal interactiva
+        chart_data = df_history.set_index("Hora")[numeric_cols]
+        st.line_chart(chart_data)
+    else:
+        st.info("💡 Envía valores numéricos en formato JSON (ej: `{\"Temperatura\": 24.5, \"Humedad\": 60}`) para generar las gráficas automáticamente.")
+
+    # --- TABLA DE HISTORIAL COMPLETO ---
+    st.markdown("---")
+    st.markdown('<div class="cyan-sub-title">📜 Historial de Registros Guardados</div>', unsafe_allow_html=True)
+    st.dataframe(df_history, use_container_width=True)
